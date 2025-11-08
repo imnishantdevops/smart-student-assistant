@@ -1,16 +1,11 @@
-# backend/app.py
-
 import os, time, json, io
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
 import pytesseract
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForQuestionAnswering
 
-# =========================
-# CONFIG
-# =========================
 app = FastAPI(title="Smart Student Assistant API")
 
 app.add_middleware(
@@ -20,72 +15,70 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-os.makedirs("logs", exist_ok=True)
-LOG_PATH = "logs/requests.log"
+# Logging path (backend/logs folder)
+os.makedirs("backend/logs", exist_ok=True)
+LOG_PATH = "backend/logs/requests.log"
 
 def log_event(entry):
-    with open(LOG_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    try:
+        with open(LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # ignore logging errors
 
+# =============================
+# Load Fine-Tuned Model If Exists
+# =============================
+FINETUNED_MODEL_PATH = "models/distilbert-qa-final"
 
-# =========================
-# LOAD FREE HUGGINGFACE MODELS
-# =========================
+print("Startup: checking models...")
 
-print("Loading HuggingFace models... please wait...")
+if os.path.exists(FINETUNED_MODEL_PATH):
+    print(f"✅ Loading fine-tuned model from {FINETUNED_MODEL_PATH}")
+    tokenizer = AutoTokenizer.from_pretrained(FINETUNED_MODEL_PATH)
+    model = AutoModelForQuestionAnswering.from_pretrained(FINETUNED_MODEL_PATH)
+    qa_model = pipeline("question-answering", model=model, tokenizer=tokenizer)
+else:
+    print("ℹ️ Fine-tuned model not found — using default model.")
+    qa_model = pipeline("question-answering", model="deepset/roberta-base-squad2")
 
-qa_model = pipeline("question-answering", model="deepset/roberta-base-squad2")
+# Summarizer Model
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 
-print("Models loaded ✅")
-
-# =========================
-# DATA MODELS
-# =========================
+# Data model
 class QARequest(BaseModel):
     context: str
     question: str
-
-
-# =========================
-# ENDPOINTS
-# =========================
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-
-# Question Answering
 @app.post("/qa")
 async def qa(req: QARequest, request: Request):
     start = time.time()
     try:
         result = qa_model(question=req.question, context=req.context)
-        answer = result["answer"]
+        answer = result["answer"].strip()
         success = True
     except Exception as e:
         answer = f"Error: {str(e)}"
         success = False
 
-    latency = time.time() - start
     log_event({
         "endpoint": "/qa",
         "question": req.question,
         "context_length": len(req.context),
         "answer": answer,
-        "latency": latency,
+        "latency": round(time.time() - start, 4),
         "success": success
     })
     return {"answer": answer}
 
-
-# Summarization
 @app.post("/summarize")
 async def summarize(data: dict):
-    text = data.get("text", "")
+    text = data.get("text") or data.get("context") or ""
     start = time.time()
-
     try:
         summary = summarizer(text, max_length=120, min_length=30, do_sample=False)[0]["summary_text"]
         success = True
@@ -93,36 +86,32 @@ async def summarize(data: dict):
         summary = f"Error: {str(e)}"
         success = False
 
-    latency = time.time() - start
     log_event({
         "endpoint": "/summarize",
         "input_length": len(text),
         "summary": summary,
-        "latency": latency,
+        "latency": round(time.time() - start, 4),
         "success": success
     })
     return {"summary": summary}
 
-
-# Handwriting OCR
 @app.post("/hw-eval")
 async def handwriting_eval(file: UploadFile = File(...)):
     start = time.time()
-
-    # Read image
     image_bytes = await file.read()
-    image = Image.open(io.BytesIO(image_bytes))
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        extracted_text = pytesseract.image_to_string(image)
+        success = True
+    except Exception as e:
+        extracted_text = f"Error processing image: {e}"
+        success = False
 
-    # OCR extract text
-    extracted_text = pytesseract.image_to_string(image)
-
-    latency = time.time() - start
     log_event({
         "endpoint": "/hw-eval",
         "file_size": len(image_bytes),
         "text_length": len(extracted_text),
-        "latency": latency,
-        "success": True
+        "latency": round(time.time() - start, 4),
+        "success": success
     })
-
     return {"extracted_text": extracted_text}
