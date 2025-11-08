@@ -34,7 +34,7 @@ FINETUNED_MODEL_PATH = "models/distilbert-qa-final"
 print("Startup: checking models...")
 
 if os.path.exists(FINETUNED_MODEL_PATH):
-    print(f"✅ Loading fine-tuned model from {FINETUNED_MODEL_PATH}")
+    print(f" Loading fine-tuned model from {FINETUNED_MODEL_PATH}")
     tokenizer = AutoTokenizer.from_pretrained(FINETUNED_MODEL_PATH)
     model = AutoModelForQuestionAnswering.from_pretrained(FINETUNED_MODEL_PATH)
     qa_model = pipeline("question-answering", model=model, tokenizer=tokenizer)
